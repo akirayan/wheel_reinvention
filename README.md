@@ -49,10 +49,8 @@ Wheel_reinverted/
 ├── mbr_decode/          # Master Boot Record
 ├── gpt_decode/          # GUID Partition Table
 │
-├── ntfs_decode/         # NTFS internals
-│   ├── vbr/             # Volume Boot Record
-│   ├── mft/             # Master File Table
-│   └── bitmap/          # (future)
+├── vbr_decode/         # NTFS internals  Volume Boot Record
+├── mft_decode/         # NTFS internals  Master File Table
 │
 ├── evtx_decode/         # Windows Event Log (.evtx)
 │
