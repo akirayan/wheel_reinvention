@@ -13,6 +13,8 @@
 //  - xml_dump_tree_text()      (flattened text)
 //  - xml_free_tree()
 //
+// Build the program
+//    gcc -Wall -Wextra -g test_xml.c evtx_xmltree.c -o test_xml
 
 #include <stdio.h>
 #include <stdlib.h>

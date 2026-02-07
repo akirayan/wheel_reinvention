@@ -9,7 +9,7 @@
 
 #include "evtx_file.h"
 #include "hex_dump.h"
-#include "output.h"
+#include "evtx_output.h"
 
 // verify and decode the evtx file header
 int decode_evtx_file_header(FILE *fp, EVTX_FILE_HEADER *fh, int output_mode)

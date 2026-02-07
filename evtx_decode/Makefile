@@ -3,7 +3,7 @@ CFLAGS  := -Wall -Wextra -O2 -std=c11
 LDFLAGS := -liconv
 
 TARGET  := evtx_decode
-SRCS    := main.c hex_dump.c timestamp.c evtx_file.c evtx_chunk.c evtx_record.c evtx_binxml.c utf16le.c
+SRCS    := main.c hex_dump.c timestamp.c evtx_file.c evtx_chunk.c evtx_record.c evtx_binxml.c utf16le.c evtx_xmltree.c evtx_output.c
 OBJS    := $(SRCS:.c=.o)
 
 .PHONY: all clean

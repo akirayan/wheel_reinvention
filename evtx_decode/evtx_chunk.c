@@ -12,7 +12,7 @@
 
 
 
-#include "output.h"
+#include "evtx_output.h"
 
 #include "evtx_chunk.h"
 #include "evtx_record.h"

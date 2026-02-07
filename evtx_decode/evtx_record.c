@@ -11,7 +11,7 @@
 #include <inttypes.h>
 
 
-#include "output.h"
+#include "evtx_output.h"
 
 #include "hex_dump.h"
 #include "timestamp.h"

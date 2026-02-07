@@ -11,7 +11,7 @@
 #include "evtx_file.h"
 #include "evtx_chunk.h"
 
-#include "output.h"
+#include "evtx_output.h"
 
 static void usage(const char *prog)
 {
