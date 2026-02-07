@@ -1,3 +1,6 @@
 
 .DS_store
 
+# Windows Event Log samples
+test_data/*.evtx
+
