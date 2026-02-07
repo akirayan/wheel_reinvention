@@ -4,3 +4,17 @@
 # Windows Event Log samples
 test_data/*.evtx
 
+# DFIR evidence (never commit)
+*.evtx
+*.evt
+*.E01
+*.raw
+*.dd
+*.vmdk
+*.vhd
+*.vhdx
+*.mem
+*.vmem
+
+# all test-data
+test_data/*.*
