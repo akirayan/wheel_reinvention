@@ -30,6 +30,6 @@ typedef struct _EVTX_FILE_HEADER {
 } EVTX_FILE_HEADER;
 #pragma pack(pop)
 
-int decode_evtx_file_header(FILE *fp, EVTX_FILE_HEADER *fh, int csv_mode);
+int decode_evtx_file(FILE *fp, uint32_t output_mode);
 
 #endif /* !defined( EVTX_FILE_H ) */

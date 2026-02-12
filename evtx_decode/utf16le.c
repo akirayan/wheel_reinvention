@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <iconv.h>
 #include <errno.h>
 
@@ -54,7 +55,7 @@ void print_utf16le_string(uint16_t char_count, uint16_t *utf16le_data) {
 
 
 
-void print_name_from_offset(FILE *fp, uint32_t chunk_base, uint32_t name_offset) {
+void print_name_from_offset_FILE(FILE *fp, uint32_t chunk_base, uint32_t name_offset) {
     // 1. Move to the absolute position in the file
     // The offset is always relative to the start of the chunk (ElfChnk)
     fseek(fp, chunk_base + name_offset, SEEK_SET);
@@ -83,7 +84,7 @@ void print_name_from_offset(FILE *fp, uint32_t chunk_base, uint32_t name_offset)
 
 
 /// This function uses the memory-mapped chunk_buffer instead of FILE I/O
-void print_name_from_offset_buffer(uint8_t *chunk_buffer, uint32_t name_offset) 
+void print_name_from_offset_BUFFER(uint8_t *chunk_buffer, uint32_t name_offset) 
 {
     // 1. Calculate the start address of the Namestring structure
     // name_offset is relative to the start of the chunk
@@ -116,6 +117,124 @@ void print_name_from_offset_buffer(uint8_t *chunk_buffer, uint32_t name_offset)
 
 
 
+static int utf16le_to_utf8(const uint16_t *src,
+                    uint16_t char_count,
+                    char *dst,
+                    size_t dst_size)
+{
+    if (!dst || dst_size == 0) return -1;
+
+    size_t out = 0;
+
+    for (uint16_t i = 0; i < char_count; i++) {
+        uint16_t wc = src[i];
+
+        /* ASCII fast path (most EVTX strings) */
+        if (wc < 0x80) {
+            if (out + 1 >= dst_size) break;
+            dst[out++] = (char)wc;
+        }
+        /* 2-byte UTF-8 */
+        else if (wc < 0x800) {
+            if (out + 2 >= dst_size) break;
+            dst[out++] = 0xC0 | (wc >> 6);
+            dst[out++] = 0x80 | (wc & 0x3F);
+        }
+        /* 3-byte UTF-8 (BMP) */
+        else {
+            if (out + 3 >= dst_size) break;
+            dst[out++] = 0xE0 | (wc >> 12);
+            dst[out++] = 0x80 | ((wc >> 6) & 0x3F);
+            dst[out++] = 0x80 | (wc & 0x3F);
+        }
+    }
+
+    dst[out] = '\0';
+
+    return (int)out;
+}
+
+
+
+
+static void get_utf16le_string(uint16_t char_count, uint16_t *utf16le_data,
+                          char *out_string_buffer,
+                          size_t out_size)
+{
+    if (!utf16le_data || char_count == 0) return;
+
+    // 1. Create conversion descriptor (From UTF-16LE to UTF-8)
+    iconv_t cd = iconv_open("UTF-8", "UTF-16LE");
+    if (cd == (iconv_t)-1) {
+        perror("iconv_open failed");
+        return;
+    }
+
+    // 2. Prepare buffers
+    // UTF-8 can take up to 3-4 bytes per character for Japanese
+    size_t in_bytes_left = char_count * 2;
+    size_t out_bytes_left = char_count * 4; 
+    char *out_buffer = malloc(out_bytes_left + 1);
+    if (!out_buffer) {
+        iconv_close(cd);
+        return;
+    }
+
+    char *in_ptr = (char *)utf16le_data;
+    char *out_ptr = out_buffer;
+
+    // 3. Perform conversion
+    if (iconv(cd, &in_ptr, &in_bytes_left, &out_ptr, &out_bytes_left) == (size_t)-1) {
+        // If conversion fails, fallback to simple ASCII or print error
+        fprintf(stderr, "\n[Conversion Error: %d]\n", errno);
+    } else {
+        *out_ptr = '\0'; // Null-terminate the UTF-8 string
+        if (strlen(out_buffer) < out_size) {
+            strcpy(out_string_buffer, out_buffer);
+        } else {
+            printf("ERROR: out_string_buffer is not enough: out_size=%zu\n", out_size);
+        }
+    }
+
+    // 4. Cleanup
+    free(out_buffer);
+    iconv_close(cd);
+}
+
+
+
+
+int get_name_from_offset(uint8_t *chunk_buffer,
+                          uint32_t name_offset,
+                          char *out_buf,
+                          size_t out_size)
+{
+    if (!chunk_buffer || !out_buf || out_size == 0)
+        return -1;
+
+    uint8_t *p = chunk_buffer + name_offset;
+
+    /* skip entry header */
+    p += 4;   // next_offset
+    p += 2;   // hash
+
+    uint16_t char_count = *(uint16_t *)(p);  
+    uint16_t *utf16le   = (uint16_t *)(p + 2);
+
+    // we use old version
+    //     return utf16le_to_utf8(utf16le, char_count, out_buf, out_size);
+    get_utf16le_string(char_count, utf16le, out_buf, out_size);
+    return strlen(out_buf);
+}
+
+void print_name_from_offset(uint8_t *chunk_buffer, uint32_t offset)
+{
+    char name_buf[1024];
+    if (get_name_from_offset(chunk_buffer, offset, name_buf, sizeof(name_buf)) >0) {
+        printf("%s", name_buf);
+    }
+}
+
 #undef TEST_UTF16LE
 
 #ifdef TEST_UTF16LE
@@ -123,20 +242,20 @@ int main() {
     printf("--- UTF-16LE Decoder Test ---\n");
 
 
-// Note the 0xXXXX format instead of 0xXX, 0xXX
-uint16_t test1[] = {
-    0x004D, 0x0069, 0x0063, 0x0072, 0x006F, 0x0073, 0x006F, 0x0066, 0x0074
-};
-
-uint16_t test2[] = {
-    0x65E5, 0x672C, 0x8A9E
-};
-
-print_utf16le_string(9, test1); // No warning!
-printf("\n");
-
-print_utf16le_string(3, test2); // No warning!
-printf("\n");
+    // Note the 0xXXXX format instead of 0xXX, 0xXX
+    uint16_t test1[] = {
+        0x004D, 0x0069, 0x0063, 0x0072, 0x006F, 0x0073, 0x006F, 0x0066, 0x0074
+    };
+    
+    uint16_t test2[] = {
+        0x65E5, 0x672C, 0x8A9E
+    };
+    
+    print_utf16le_string(9, test1); // No warning!
+    printf("\n");
+    
+    print_utf16le_string(3, test2); // No warning!
+    printf("\n");
 
 
     printf("-----------------------------\n");

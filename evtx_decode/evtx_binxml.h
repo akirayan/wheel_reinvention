@@ -8,12 +8,13 @@ typedef struct {
     uint8_t *end_ptr;         // data_ptr + binxml_size (The boundary)
 } BinXmlContext;
 
+#include "evtx_xmltree.h"
 
-void decode_binxml(uint8_t *chunk_buffer, uint32_t binxml_offset, uint32_t binxml_size);
-//void decode_binxml(uint32_t chunk_base, uint8_t *chunk_buffer, uint32_t record_base, uint8_t *binxml_offset, uint32_t binxml_size);
+
+void decode_binxml(uint8_t *chunk_buffer, uint32_t binxml_offset, uint32_t binxml_size, uint32_t output_mode, XML_TREE *xtree);
+
 const char* get_value_type_name(uint8_t value_type);
 
-void parse_binxml_stream(BinXmlContext *ctx); 
 
 #endif
  

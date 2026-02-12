@@ -1,0 +1,28 @@
+- <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+- <System>
+  <Provider Name="Microsoft-Windows-Eventlog" Guid="{fc65ddd8-d6ef-4962-83d5-6e5cfe9ce148}" /> 
+  <EventID>1102</EventID> 
+  <Version>1</Version> 
+  <Level>4</Level> 
+  <Task>104</Task> 
+  <Opcode>0</Opcode> 
+  <Keywords>0x4020000000000000</Keywords> 
+  <TimeCreated SystemTime="2026-02-06T08:18:43.5668318Z" /> 
+  <EventRecordID>45125</EventRecordID> 
+  <Correlation /> 
+  <Execution ProcessID="1444" ThreadID="10312" /> 
+  <Channel>Security</Channel> 
+  <Computer>win11ja111</Computer> 
+  <Security /> 
+  </System>
+- <UserData>
+- <LogFileCleared xmlns="http://manifests.microsoft.com/win/2004/08/windows/eventlog">
+  <SubjectUserSid>S-1-5-21-842971399-2517075446-1932419135-1001</SubjectUserSid> 
+  <SubjectUserName>endoaki</SubjectUserName> 
+  <SubjectDomainName>WIN11JA111</SubjectDomainName> 
+  <SubjectLogonId>0x47e69</SubjectLogonId> 
+  <ClientProcessId>9108</ClientProcessId> 
+  <ClientProcessStartKey>3659174697240252</ClientProcessStartKey> 
+  </LogFileCleared>
+  </UserData>
+  </Event>

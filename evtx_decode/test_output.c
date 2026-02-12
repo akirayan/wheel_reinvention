@@ -1,17 +1,9 @@
-/* main.c
- *
- *
- */
-
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "evtx_output.h"
-#include "evtx_file.h"
-
-
 
 static void usage(const char *prog)
 {
@@ -88,7 +80,7 @@ const char *check_cmd_argv(uint32_t *mode_ptr, int argc, char *argv[])
 
 
 
-int main(int argc, char **argv)
+int main(int argc, char *argv[])
 {
     uint32_t output_mode = 0;
     const char *filename = check_cmd_argv(&output_mode, argc, argv);
@@ -99,16 +91,36 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    FILE *fp = fopen(filename, "rb");
-    if (!fp) {
-        perror("fopen");
-        return 1;
-    }
+    /* ---- Debug print of parsed state ---- */
 
-    int rtn_code = decode_evtx_file(fp, output_mode);
+    printf("Input file : %s\n", filename);
+    printf("EventID    : ");
+    if (GET_EVTID(output_mode))
+        printf("%u\n", GET_EVTID(output_mode));
+    else
+        printf("(none)\n");
 
-    fclose(fp);
+    printf("Output mode:\n");
 
-    return rtn_code;
+    if (IS_OUT_DEFAULT(output_mode))
+        printf("  DEFAULT summary output\n");
+
+    if (CHECK_OUTMODE(output_mode, OUT_CSV))
+        printf("  CSV\n");
+    if (CHECK_OUTMODE(output_mode, OUT_TXT))
+        printf("  TXT\n");
+    if (CHECK_OUTMODE(output_mode, OUT_XML))
+        printf("  XML\n");
+    if (CHECK_OUTMODE(output_mode, OUT_SCHEMA))
+        printf("  SCHEMA\n");
+    if (CHECK_OUTMODE(output_mode, OUT_DEBUG))
+        printf("  DEBUG\n");
+
+    /*
+     * Here is where real code would go:
+     *
+     *   decode_evtx_file(filename, output_mode);
+     */
+
+    return 0;
 }
-

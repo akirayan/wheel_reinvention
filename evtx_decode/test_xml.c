@@ -38,8 +38,11 @@ int main(void)
 
     // <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
     XML_ELEMENT *event = xml_new_element("Event");
-    xml_add_attribute(event, "xmlns",
-        "http://schemas.microsoft.com/win/2004/08/events/event");
+
+    XML_ATTRIBUTE *attr = xml_new_attribute("xmlns");
+    xml_set_attribute(attr, "http://schemas.microsoft.com/win/2004/08/events/event", 0x01);
+    xml_add_attribute(event, attr);
+
     tree->root = event;
 
     // <System>
@@ -48,25 +51,27 @@ int main(void)
 
     // <Provider Name="Microsoft-Windows-Servicing" Guid="{...}" />
     XML_ELEMENT *provider = xml_new_element("Provider");
-    xml_add_attribute(provider, "Name", "Microsoft-Windows-Servicing");
-    xml_add_attribute(provider, "Guid", "{bd12f3b8-fc40-4a61-a307-b7a013a069c1}");
+
+    XML_ATTRIBUTE *attr1 = xml_new_attribute("Name");
+    xml_set_attribute(attr1, "Microsoft-Windows-Servicing", 0x01);
+    xml_add_attribute(provider, attr1);
+
+    XML_ATTRIBUTE *attr2 = xml_new_attribute("Guid");
+    xml_set_attribute(attr2, "{bd12f3b8-fc40-4a61-a307-b7a013a069c1}", 0x01);
+    xml_add_attribute(provider, attr2);
+
     xml_add_child(system, provider);
 
     // <EventID>15</EventID>
     XML_ELEMENT *eventid = xml_new_element("EventID");
-    eventid->text = strdup("15");
+    xml_set_element(eventid, "15", 0x01);
+
+    XML_ATTRIBUTE *attr9 = xml_new_attribute("TESTNULL");
+    xml_set_attribute(attr9, "(null)", 0x00);
+    xml_add_attribute(eventid, attr9);
+
     xml_add_child(system, eventid);
 
-    // <Execution ProcessID="4396" ThreadID="4432" />
-    XML_ELEMENT *exec = xml_new_element("Execution");
-    xml_add_attribute(exec, "ProcessID", "4396");
-    xml_add_attribute(exec, "ThreadID", "4432");
-    xml_add_child(system, exec);
-
-    // <Computer>DESKTOP-5VCD46O</Computer>
-    XML_ELEMENT *computer = xml_new_element("Computer");
-    computer->text = strdup("DESKTOP-5VCD46O");
-    xml_add_child(system, computer);
 
     // ------------------------------------------------------------
     // Test output modes

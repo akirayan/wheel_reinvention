@@ -25,7 +25,7 @@ typedef struct _EVTX_RECORD_HEADER {
 
 
 
-int decode_evtx_record(uint32_t chunk_base, uint32_t record_base, uint8_t *chunk_buffer, uint16_t output_mode);
+int decode_evtx_record(uint32_t chunk_base, uint32_t record_base, uint8_t *chunk_buffer, uint32_t output_mode);
 
 void get_item_value_by_index(uint8_t *chunk_buffer, int index);
 

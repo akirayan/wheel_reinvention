@@ -95,7 +95,7 @@ void chunk_name_offset_add_cache(uint32_t offset) {
 }
 
  
-int decode_evtx_chunk(FILE *fp, uint16_t chunk_index, uint16_t output_mode)
+int decode_evtx_chunk(FILE *fp, uint16_t chunk_index, uint32_t output_mode)
 {
     // the absolute offset in the file, it should be 0x00001000, 0x00011000, 0x00021000, ...
     // this is the absolute starting point of this chunk in the input evtx file
@@ -133,10 +133,6 @@ int decode_evtx_chunk(FILE *fp, uint16_t chunk_index, uint16_t output_mode)
         uint32_t record_base = sizeof(EVTX_CHUNK_HEADER); 
 
     
-        //// DEBUG ONLY
-        ////record_count = 1;
-
-
         for (uint64_t i = 0; i < record_count; i++) { // decode each record
         
             // the stuct to hold the record header
@@ -173,7 +169,7 @@ static void decode_evtx_chunk_header(uint32_t chunk_base, uint8_t *chunk_buffer,
     EVTX_CHUNK_HEADER *ch = (EVTX_CHUNK_HEADER *)chunk_buffer; 
 
     // byte 0 to 127 (128 bytes)
-    if (output_mode & OUTPUT_TSV) {
+    if (IS_OUT_DEFAULT(output_mode)) {
         // get the index of this chunk just for summary line output
         uint64_t chunk_index = (chunk_base - EVTX_CHUNK_START_OFFSET) / EVTX_CHUNK_SIZE;
 
@@ -193,46 +189,43 @@ static void decode_evtx_chunk_header(uint32_t chunk_base, uint8_t *chunk_buffer,
                ch->free_space_offset);
         printf("\n");
     }
-    if (output_mode & OUTPUT_DUMP) {
+
+    if (CHECK_OUTMODE(output_mode, OUT_DEBUG)) {
         hex_dump_bytes((uint8_t *)ch, ch->header_size);
     }
 
 
-//#define DECODE_COMMON_NAME
+    if (CHECK_OUTMODE(output_mode, OUT_DEBUG)) {
 
-#ifdef DECODE_COMMON_NAME
-    // byte 128 to 383 (256 bytes)
-    // common string array: process each uint32 entry 
-    for (int i = 0; i < 64; i++) {
-        uint32_t string_offset = ch->string_offset_array[i];
-        if (string_offset > 0) {   // if this offset is in using 
-            // call function to process each
-            decode_common_string_entry(chunk_base, chunk_buffer, string_offset, i, output_mode);
-        }
-    }
-#endif
-
-//#define DECODE_TEMPLATE_TABLE
-#ifdef DECODE_TEMPLATE_TABLE
-    // byte 384 to 512 (128 bytes)
-    // template definition array: process each uint32 entry
-    for (int i = 0; i < 32; i++) {
-        uint32_t template_offsets = ch->template_ptr_array[i];
-        if (template_offsets > 0) { // if this offset is in using 
-            // call function to process each
-            decode_template_ptr_entry(chunk_base, chunk_buffer, template_offsets, i, output_mode);
+        // byte 128 to 383 (256 bytes)
+        // common string array: process each uint32 entry 
+        for (int i = 0; i < 64; i++) {
+            uint32_t string_offset = ch->string_offset_array[i];
+            if (string_offset > 0) {   // if this offset is in using 
+                // call function to process each
+                decode_common_string_entry(chunk_base, chunk_buffer, string_offset, i, output_mode);
+            }
         }
     }
 
-#endif
+    if (CHECK_OUTMODE(output_mode, OUT_DEBUG)) {
+        // byte 384 to 512 (128 bytes)
+        // template definition array: process each uint32 entry
+        for (int i = 0; i < 32; i++) {
+            uint32_t template_offsets = ch->template_ptr_array[i];
+            if (template_offsets > 0) { // if this offset is in using 
+                // call function to process each
+                decode_template_ptr_entry(chunk_base, chunk_buffer, template_offsets, i, output_mode);
+            }
+        }
 
+    }
 }
 
 
 
 static void decode_common_string_entry(uint32_t chunk_base, uint8_t *chunk_buffer, uint32_t offset, int entry_index, uint16_t output_mode) 
 {
-
     // read the NAME ENTRY HEADER (fixed size)
     EVTX_NAME_ENTRY_HEADER *n_header = (EVTX_NAME_ENTRY_HEADER *) &chunk_buffer[offset];
 
@@ -246,7 +239,7 @@ static void decode_common_string_entry(uint32_t chunk_base, uint8_t *chunk_buffe
            n_header->char_count);
     
     // 4. print the UTF-16LE string
-    print_name_from_offset_buffer(chunk_buffer, offset);
+    print_name_from_offset(chunk_buffer, offset);
     printf("\n");
 
     // 5. if n_header.next_offset is not 0, need to jump to next_offset
@@ -281,12 +274,4 @@ static void decode_template_ptr_entry(uint32_t chunk_base, uint8_t *chunk_buffer
         decode_template_ptr_entry(chunk_base, chunk_buffer, t_header->next_offset, -1, output_mode);
     }
 }
-
-
-
-
-
-
-
-
 

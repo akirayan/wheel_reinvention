@@ -6,54 +6,71 @@
 #include "evtx_chunk.h"
 #include "evtx_record.h"
 #include "evtx_binxml.h"
+#include "evtx_output.h"
 
 #include "utf16le.h"
 #include "timestamp.h"
 #include "hex_dump.h"
-
-
-
-typedef enum {
-    BINXML_TOKEN_EOF                = 0x00,
-    BINXML_TOKEN_OPEN_ELEMENT       = 0x01, // Also 0x41
-    BINXML_TOKEN_CLOSE_START_TAG    = 0x02,
-    BINXML_TOKEN_CLOSE_EMPTY_TAG    = 0x03,
-    BINXML_TOKEN_END_ELEMENT        = 0x04,
-    BINXML_TOKEN_VALUE              = 0x05, // Also 0x45
-    BINXML_TOKEN_ATTRIBUTE          = 0x06, // Also 0x46
-    BINXML_TOKEN_CDATA              = 0x07,
-    BINXML_TOKEN_CHAR_REF           = 0x08,
-    BINXML_TOKEN_ENTITY_REF         = 0x09,
-    BINXML_TOKEN_PI_TARGET          = 0x0a,
-    BINXML_TOKEN_PI_DATA            = 0x0b,
-    BINXML_TOKEN_TEMPLATE_INSTANCE  = 0x0c,
-    BINXML_TOKEN_SUBSTITUTION       = 0x0d,
-    BINXML_TOKEN_OPT_SUBSTITUTION   = 0x0e,
-    BINXML_TOKEN_FRAGMENT_HEADER    = 0x0f
-} BINXML_TOKEN;
-
+#include "stack.h"
 
 
 
 #pragma pack(push, 1)
 
+// Token 0x0f: BINXML Fragment
+typedef struct {
+    uint8_t  token;          // should be 0x0f
+    uint8_t  major_version;     // e.g., 0x01 for String, 0x04 for Hex32, etc.
+    uint8_t  minor_version;     // e.g., 0x01 for String, 0x04 for Hex32, etc.
+    uint8_t  flag;     // e.g., 0x01 for String, 0x04 for Hex32, etc.
+                             // followed by the actual data based on the type
+} TOKEN_0F_FRAGMENT_HEADER;
+
 // Token 0x01 / 0x41: Open Element
 typedef struct {
-    uint16_t dependency_id; // Usually 0xFFFF
+    uint8_t  token;          // should be 0x01 or 0x41
+    uint16_t dependency_id;  // Usually 0xFFFF
     uint32_t element_size;   // Total size of this element branch
     uint32_t name_offset;    // Offset to Name Descriptor
-} BINXML_OPEN_ELEMENT_HEADER;
+                             // for 0x41: 4B as more_data_size 
+} TOKEN_01_OPEN_ELEMENT_HEADER;
 
 // Token 0x05: Value Token
-// This is followed by the actual data based on the type
 typedef struct {
-    uint8_t value_type;      // e.g., 0x01 for String, 0x04 for Hex32, etc.
-} BINXML_VALUE_HEADER;
+    uint8_t  token;          // should be 0x05
+    uint8_t  value_type;     // e.g., 0x01 for String, 0x04 for Hex32, etc.
+                             // followed by the actual data based on the type
+} TOKEN_05_ATTRIBUTE_VALUE_HEADER;
 
-// Token 0x06 / 0x46: Attribute
+// Token 0x06 / 0x46: Attribute Name
 typedef struct {
-    uint32_t name_offset;    // Offset to Attribute Name
-} BINXML_ATTRIBUTE_HEADER;
+    uint8_t  token;          // should be 0x06 or 0x46
+    uint32_t name_offset;    // name offfset for Attribute Name
+                             // NOTE for 0x46: NO MORE 4B as more_data_size 
+} TOKEN_06_ATTRIBUTE_NAME_HEADER;
+
+
+// Token 0x36: Attribute Name   (new token found by me)
+typedef struct {
+    uint8_t  token;          // should be 0x36
+    uint8_t  unknown[4];     // Unknown/Dependency ID. Similar to the ff ff seen in 0x41, but 4 bytes. 
+                             // This might be a more complex dependency identifier.
+    uint32_t name_offset;    // name offfset for Attribute Name
+} TOKEN_36_ATTRIBUTE_NAME_HEADER;
+
+
+
+
+
+
+
+// Token 0x0d BinXmlTokenNormalSubstitution 
+// Token 0x0e BinXmlTokenOptionallSubstitution
+typedef struct {
+    uint8_t  token;      // should be 0x0d or 0x0e
+    uint16_t subs_id;    // Substitution identifier
+    uint8_t value_type;    
+} TOKEN_0E_SUBSTITUTION_HEADER;
 
 // Token 0x0C: Template Instance Header
 // the 33-byte structure including 24-byte of TEMPLATE_DEFINITION_HEADER
@@ -64,28 +81,22 @@ typedef struct {
     uint32_t template_offset;   // offset to TEMPLATE_DEFINITION_HEADER, usually next 4 bytes
 } BINXML_TEMPLATE_INSTANCE_HEADER;
 
+// substitution value array
+typedef struct {
+    uint16_t size;          // raw value size
+    uint16_t type;          // EVTX value type, only 1 byte used
+    uint32_t value_offset;  // relative offset in chunk_buffer
+} EVTX_VALUE_ITEM;
+
+typedef struct {
+    uint16_t count;
+    EVTX_VALUE_ITEM *items;
+} EVTX_VALUE_TABLE;
+
 #pragma pack(pop)
 
 
-
-
-
-
-
-
-// --- Corrected Utility function to format and print a GUID ---
-static void print_guid(const uint8_t *guid) {
-    // GUID structure: 
-    // Data1 (4 bytes - LE), Data2 (2 bytes - LE), Data3 (2 bytes - LE), 
-    // Data4 (2 bytes - BE), Data5 (6 bytes - BE)
-    
-    printf("%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
-           guid[3], guid[2], guid[1], guid[0],   // Data1: 4 bytes LE
-           guid[5], guid[4],                     // Data2: 2 bytes LE
-           guid[7], guid[6],                     // Data3: 2 bytes LE
-           guid[8], guid[9],                     // Data4: 2 bytes BE (No swap)
-           guid[10], guid[11], guid[12], guid[13], guid[14], guid[15]); // Data5: 6 bytes BE
-}
+static void print_value_by_index(EVTX_VALUE_TABLE *tbl, uint8_t *chunk_buffer, uint32_t index, uint32_t output_mode, XML_TREE *xtree);
 
 
 const char* get_value_type_name(uint8_t value_type) {
@@ -127,56 +138,32 @@ const char* get_value_type_name(uint8_t value_type) {
 
 /**
  * インラインの名前エントリが存在する場合、そのサイズを計算して返す。
- * 同時にキャッシュリストへの登録も行う。
  *
  * @param buffer  BinXMLのバッファ
  * @param pos     現在の読み込み位置（NameOffsetの直後の位置）
  * @param name_off 解析したNameOffset
  * @return スキップすべきバイト数（実体がない場合は0）
  */
-static int get_inline_name_skip_bytes(const uint8_t *buffer, uint32_t pos, uint32_t name_off) 
+static uint32_t get_inline_name_skip_bytes(uint8_t *chunk_buffer, uint32_t cursor_offset, uint32_t name_offset) 
 {
-    // すでにキャッシュされている＝実体はこの場所にはない
-    if (chunk_name_offset_is_cached(name_off)) {
-        return 0;
+    uint32_t skip_size = 0;
+
+    //printf("DEBUG: get_inline_name_skip_bytes() cursor=0x%x\tname_offset=0x%x", cursor_offset, name_offset);
+
+    if (cursor_offset == name_offset) { 
+        // Name_Offset is just at the cursor, need to skip it
+        EVTX_NAME_ENTRY_HEADER nh;
+        memcpy(&nh, &chunk_buffer[cursor_offset], sizeof(nh));
+
+        skip_size = sizeof(nh) + (nh.char_count * 2 + 2); // plus 2 NULLs
     }
 
-    // まだ登録されていない場合、ここに実体（Header + UTF-16 String）がある
-    EVTX_NAME_ENTRY_HEADER nh;
-    memcpy(&nh, &buffer[pos], sizeof(nh));
+    //printf("\tskip_size=%d\n", skip_size);
 
-    // 実体のサイズ = ヘッダー(8) + 文字列(文字数 * 2)
-    uint32_t skip_size = sizeof(nh) + (nh.char_count * 2);
-
-    // 次回からはスキップ（0を返す）するようにキャッシュへ登録
-    chunk_name_offset_add_cache(name_off);
-
-    return (int)skip_size;
+    return skip_size;
 }
 
 
-
-
-
-// Simple Indentation Helper
-static void print_indent(int depth) {
-    for (int i = 0; i < depth; i++) printf("  ");
-}
-
-
-// substitution value array
-typedef struct {
-    uint16_t size;          // raw value size
-    uint16_t type;          // EVTX value type, only 1 byte used
-    uint32_t value_offset;  // relative offset in chunk_buffer
-} EVTX_VALUE_ITEM;
-
-typedef struct {
-    uint16_t count;
-    EVTX_VALUE_ITEM *items;
-} EVTX_VALUE_TABLE;
-
-void get_value_by_index(EVTX_VALUE_TABLE *tbl, uint8_t *chunk_buffer, uint32_t index);
 
 
 static void print_evtx_filetime(uint64_t filetime) {
@@ -241,7 +228,7 @@ static void print_evtx_guid(uint8_t *guid_ptr) {
 }
 
 // build the TABLE, set each member from chunk_buffer
-static void create_value_table(EVTX_VALUE_TABLE *tbl, uint8_t *chunk_buffer, uint32_t value_table_offset)
+static void create_value_table(EVTX_VALUE_TABLE *tbl, uint8_t *chunk_buffer, uint32_t value_table_offset, uint32_t output_mode)
 {
     // value_array layout
     // 4B item_count    at value_table_offset
@@ -273,12 +260,6 @@ static void create_value_table(EVTX_VALUE_TABLE *tbl, uint8_t *chunk_buffer, uin
         value_offset += size; // trust the size
     }
 
-    // DEBUG output
-    for (uint32_t i = 0; i < count; i++) {
-        printf("%%%" PRIu32 "\t", i);
-        get_value_by_index(tbl, chunk_buffer, i);
-        printf("\n");
-    }
 }
 
 // free the allocated memory
@@ -288,7 +269,11 @@ static void delete_value_table(EVTX_VALUE_TABLE *tbl)
 }
 
 // get the value by index
-void get_value_by_index(EVTX_VALUE_TABLE *tbl, uint8_t *chunk_buffer, uint32_t index)
+static void print_value_by_index(EVTX_VALUE_TABLE *tbl, 
+                                  uint8_t *chunk_buffer, 
+                                  uint32_t index, 
+                                  uint32_t output_mode, 
+                                  XML_TREE *xtree)
 {
     if (index >= tbl->count) return;
 
@@ -348,28 +333,20 @@ void get_value_by_index(EVTX_VALUE_TABLE *tbl, uint8_t *chunk_buffer, uint32_t i
             break;
 
         case 0x15: // HexInt64Type
-            printf("0x%016llx", *(uint64_t *)data_ptr);
+            printf("0x%llx", *(uint64_t *)data_ptr);
             break;
 
         case 0x21: // BinXmlType
         {
-            printf("[Embedded BinXML Area - %d bytes]", size);
-            BinXmlContext sub_ctx = {
-                .chunk_buffer = chunk_buffer,
-                .data_ptr = chunk_buffer + val_item->value_offset,
-                .end_ptr  = chunk_buffer + val_item->value_offset + val_item->size,
-            };
+           
+            if (CHECK_OUTMODE(output_mode, OUT_DEBUG)) {
+                printf("[Embedded BinXML Area - %d bytes]", size);
+                printf("\nDEBUG: called from print_value_by_index()\t");
+            }
 
-            // dump it 
-            //printf("\n");
-            //hex_dump_bytes(chunk_buffer + val_item->value_offset, val_item->size);
-
-            //printf("\nDEBUG: called from get_value_by_index()\t");
             // decode it
-            printf("\n");
-            decode_binxml(chunk_buffer, val_item->value_offset, val_item->size); 
+            decode_binxml(chunk_buffer, val_item->value_offset, val_item->size, output_mode, xtree); 
 
-            // parse_binxml_stream(&sub_ctx);
             break;
        }
 
@@ -384,13 +361,210 @@ void get_value_by_index(EVTX_VALUE_TABLE *tbl, uint8_t *chunk_buffer, uint32_t i
 
 
 
+static void decode_template_with_values(
+                   uint8_t *chunk_buffer,        /* the 64KB chunk in memory */
+                   uint32_t binxml_offset,       /* start position of binxml, related to chunk_buffer */
+                   uint32_t binxml_size,         /* the size of buffer =  record_size - 24 - 4  */       
+                   EVTX_VALUE_TABLE *tbl_ptr,    /* value table of this binxml */
+                   uint32_t output_mode,         /* CSV or DEBUG etc */
+                   XML_TREE *xtree)              /* the tree */
+{
+    uint32_t i = binxml_offset;  // the starting point of cursor in buffer
+    uint32_t binxml_limit = binxml_offset + binxml_size;  // the hard limit of cursor in buffer
+
+    XML_TREE *current; // the temprate tree
+    STACK *stack = stack_new(); // to hold element names
+
+    if (CHECK_OUTMODE(output_mode, OUT_DEBUG)) {
+        printf("DEBUG: decode_template_with_values() offset=0x%08" PRIx32 "\tsize=%" PRIu32 "\n", binxml_offset, binxml_size);
+        hex_dump_bytes(&chunk_buffer[binxml_offset], binxml_size);
+    }
+
+    while (i < binxml_limit ) {
+        uint8_t raw_token = chunk_buffer[i];
+
+        //printf("\nDEBUG: cursor=0x%x\traw_token=0x%02x\n", i, raw_token);
+        
+        switch (raw_token) {
+
+            case 0x0f: // BinXmlFragmentHeaderToken
+            {
+                TOKEN_0F_FRAGMENT_HEADER fh;
+                memcpy(&fh, &chunk_buffer[i], sizeof(fh));
+                i += sizeof(fh); // [Token 1B] [MajorVersion 1B] [MinorVersion 1B] [Flags 1B]
+                break;
+            }
+
+            case 0x01: // BinXmlTokenOpenStartElement
+            case 0x41: // BinXmlTokenOpenStartElement | BinXmlTokenMoreData
+            {
+                TOKEN_01_OPEN_ELEMENT_HEADER open_el;
+                memcpy(&open_el, &chunk_buffer[i], sizeof(open_el));
+                i += sizeof(open_el); // skip (Token + DependencyID + DataSize + NameOffset)
+            
+                char name_buf[1024];
+                get_name_from_offset(chunk_buffer, open_el.name_offset, name_buf, sizeof(name_buf));
+                printf("<%s", name_buf);
+                stack_push(stack, name_buf);
+
+                // if the name_offset is defined at here, skip the whole name buffer
+                i += get_inline_name_skip_bytes(chunk_buffer, i, open_el.name_offset);
+            
+                if (raw_token & 0x40) { 
+                    // if token=0x41, there are 4 bytes as attr_list_size
+                    // uint32_t attr_list_size = *(uint32_t*)&chunk_buffer[i]; 
+                    i += 4; 
+                }
+            
+                break;
+            }
+            
+            case 0x06: // BinXmlTokenAttribute
+            case 0x46: // BinXmlTokenAttribute | BinXmlTokenMoreData
+            {
+                TOKEN_06_ATTRIBUTE_NAME_HEADER attr;
+                memcpy(&attr, &chunk_buffer[i], sizeof(attr));
+                i += sizeof(attr); // token + 4B 
+            
+                char name_buf[1024];
+                get_name_from_offset(chunk_buffer, attr.name_offset, name_buf, sizeof(name_buf));
+                printf(" %s=", name_buf);
+            
+                // if the name_offset is defined at here, skip the whole name buffer
+                i += get_inline_name_skip_bytes(chunk_buffer, i, attr.name_offset);
+            
+                // NOTE for 0x46
+                // there is NO 4 bytes as more_data_size
+
+                break;
+            }
+
+
+            case 0x36: // new token seems for attribute name
+            {
+                TOKEN_36_ATTRIBUTE_NAME_HEADER attr;
+                memcpy(&attr, &chunk_buffer[i], sizeof(attr));
+                i += sizeof(attr); // token + 4B unkown + 4B name_offset 
+            
+                char name_buf[1024];
+                get_name_from_offset(chunk_buffer, attr.name_offset, name_buf, sizeof(name_buf));
+                printf(" %s=", name_buf);
+            
+                // if the name_offset is defined at here, skip the whole name buffer
+                i += get_inline_name_skip_bytes(chunk_buffer, i, attr.name_offset);
+            
+                break;
+            }
+
+
+            case 0x05: // BinXmlTokenValue
+            case 0x45: // BinXmlTokenValue | BinXmlTokenMoreData
+            {
+                TOKEN_05_ATTRIBUTE_VALUE_HEADER vh;
+                memcpy(&vh, &chunk_buffer[i], sizeof(vh));
+                i += sizeof(vh); // token + type
+
+                uint8_t v_type = vh.value_type;
+            
+                switch (v_type) {
+                    case 0x01: // Unicode String
+                    {
+                        uint16_t char_count = *(uint16_t*)&chunk_buffer[i];
+                        i += 2; // consume count
+
+                        print_utf16le_string(char_count, (uint16_t *)&chunk_buffer[i]);
+                        i += (char_count * 2); // consume utf16le string
+
+                        break;
+                    }
+
+                    case 0x00: // nulltype
+                        printf("null");
+                        break;
+
+                    default:
+                        printf("WARNING: No code for token=0x05 or 0x45: value_type=0x%02x\n", v_type);
+                        break;
+
+               }
+
+               // is any thing to handle for 0x45 ??
+               break;
+            }
+
+
+            case 0x0d: // BinXmlTokenNormalSubstitution
+            case 0x0e: // BinXmlTokenOptionalSubstitution
+            {
+                TOKEN_0E_SUBSTITUTION_HEADER sh;
+                memcpy(&sh, &chunk_buffer[i], sizeof(sh));
+                i += sizeof(sh); // token + 2B subID + 1B type
+
+                //printf("DEBUG: subs_id=%%%d\n", sh.subs_id);
+
+                print_value_by_index(tbl_ptr, chunk_buffer, sh.subs_id, output_mode, xtree);
+
+                // how to handle array type?
+
+                break;
+            }
+            
+
+            case 0x08: // BinXmlTokenCharRef
+            case 0x48: // BinXmlTokenCharRef
+            case 0x09: // BinXmlTokenEntityRef
+            case 0x49: // BinXmlTokenEntityRef
+            case 0x07: // BinXmlTokenCDATASection
+            case 0x47: // BinXmlTokenCDATASection
+            case 0x0a: // BinXmlTokenPITarget
+            case 0x0b: // BinXmlTokenCDATASection
+                i += 1; // token
+                printf("WARNING: no code for this token 0x%02x\n", raw_token);
+                break;
+
+            case 0x0c: // BinXmlTokenTemplateInstance
+                // this should never appear in template_binxml
+                printf("ERROR: Token 0C appreared on template_binxml, something WRONG?\n");
+                return;
+                break;
+            
+            case 0x02: // BinXmlTokenCloseStartElementTag
+                i += 1;
+                printf(">");
+                break;
+
+            case 0x03: // BinXmlTokenCloseEmptyElementTag
+                i += 1;
+                printf("/>\n");
+                stack_pop(stack);  // since this is an empty element, we need to pop it from stack, but not print out
+                break;
+
+            case 0x04: // BinXmlTokenEndElementTag
+                i += 1;
+                printf("</%s>\n", stack_pop(stack));
+                break;
+
+            case 0x00: // BinXmlTokenEOF  EOF or Padding, just skip it to next byte
+                i += 1;
+                break;
+
+            default:
+                printf("WARNING: Token 0x%02x NOT PROCESSED\n", raw_token);
+                i += 1; 
+                break;
+        }
+    }
+}
+
 
 
 
 
 void decode_binxml(uint8_t *chunk_buffer,        /* the 64KB chunk in memory */
                    uint32_t binxml_offset,       /* start position of binxml, related to chunk_buffer */
-                   uint32_t binxml_size)         /* the size of buffer =  record_size - 24 - 4  */       
+                   uint32_t binxml_size,         /* the size of buffer =  record_size - 24 - 4  */       
+                   uint32_t output_mode,         /* CSV or DEBUG etc */
+                   XML_TREE *xtree)              /* XML TREE of output */
 {
     // binxml can be splitted into 3 parts:
     //     {template-ID-Offset} {optional: definition} {instance data}
@@ -409,7 +583,9 @@ void decode_binxml(uint8_t *chunk_buffer,        /* the 64KB chunk in memory */
 
     EVTX_VALUE_TABLE value_table;
 
-    printf("DEBUG: decode_binxml() offset=0x%08" PRIx32 "\tsize=%" PRIu32 "\n", binxml_offset, binxml_size);
+    if (CHECK_OUTMODE(output_mode, OUT_DEBUG)) {
+        printf("decode_binxml() offset=0x%08" PRIx32 "\tsize=%" PRIu32 "\n", binxml_offset, binxml_size);
+    }
 
     // first find template specified by token 0C, usuaaly in the very begining
     for (uint32_t i = binxml_offset; i < binxml_offset + 10; i++) { 
@@ -438,19 +614,19 @@ void decode_binxml(uint8_t *chunk_buffer,        /* the 64KB chunk in memory */
       }
 
       // adjust the value_table_offset if part2 existing
-      if ((binxml_offset < template_binxml_offset) && (template_binxml_offset < binxml_offset + binxml_size)) {
+      if ((binxml_offset < template_binxml_offset) && 
+                 (template_binxml_offset < binxml_offset + binxml_size)) {
            // template binxml is within the original binxml, i.e. size of part2
            value_table_offset += template_binxml_size + sizeof(EVTX_TEMPLATE_DEFINITION_HEADER);
       }
 
       // build the value_table
-      create_value_table(&value_table, chunk_buffer, value_table_offset);
-
+      create_value_table(&value_table, chunk_buffer, value_table_offset, output_mode);
 
       // now, merge the template_binxml with value data
-
-
-
+      decode_template_with_values(chunk_buffer, 
+              template_binxml_offset, template_binxml_size, 
+              &value_table, output_mode, xtree);
 
       // free memory
       delete_value_table(&value_table);
@@ -458,413 +634,7 @@ void decode_binxml(uint8_t *chunk_buffer,        /* the 64KB chunk in memory */
 
 
 
-void OLD_decode_binxml(uint8_t *chunk_buffer, /* the 64KB chunk in memory */
-                   uint8_t *buffer,       /* buffer holding whole binxml                 */       
-                   uint32_t size)         /* the size of buffer =  record_size - 24 - 4  */       
-{
-    int i = 0;  // the cursor in buffer
-    int is_parsing_template = -1;
-    int template_end_pos = 0;
-    int depth = 0;
-
-    while (i < size) {
-        uint8_t raw_token = buffer[i];
-        int has_more_data = ((raw_token & 0x40) != 0);
-        uint8_t token = raw_token & 0x3F; // Strip the 0x40 flag for the switch
-        
-        switch (token) {
-
-            case 0x00: // BinXmlTokenEOF
-                //printf("</Fragment>\n");
-                if (is_parsing_template && i + 1 == template_end_pos) {
-                    printf("--- Template Definition End ---\n");
-                    is_parsing_template = 0;
-                    template_end_pos = 0;
-                }
-                i += 1;
-                break;
-
-            case BINXML_TOKEN_FRAGMENT_HEADER: //0x0F
-            {
-                // printf("DEBUG token=%02X (0x%08x)\n", raw_token, i);
-                // Structure: [Token 1B] [MajorVersion 1B] [MinorVersion 1B] [Flags 1B]
- 
-                i += 4; 
-                break;
-            }
-
-            case BINXML_TOKEN_TEMPLATE_INSTANCE: // 0x0C
-            {
-                BINXML_TEMPLATE_INSTANCE_HEADER th0C;
-                // トークン 0x0C の直後(i+1)から9バイト分を構造体にコピー
-                memcpy(&th0C, &buffer[i + 1], sizeof(th0C));
-            
-                // move i to current position
-                i += 1 + sizeof(th0C); // ヘッダー分を進めて内部のパースへ
- 
-                // now there is a TEMPLATE_DEFINITION
-                //typedef struct _EVTX_TEMPLATE_DEFINITION_HEADER {
-                //    uint32_t next_offset;          // 0x00: link to next entry if needed 
-                //    uint32_t template_id;          // 0x04: Template ID
-                //    uint8_t  unknown_guid[12];     // 0x08: 12 bytes unknown or guid-like
-                //    uint32_t data_size;            // 0x14: size of following binxml data
-                //} EVTX_TEMPLATE_DEFINITION_HEADER;
-                //
-
-                EVTX_TEMPLATE_DEFINITION_HEADER th;
-                memcpy(&th, chunk_buffer + th0C.template_offset, sizeof(th));
-
-                uint32_t binxml_offset = th0C.template_offset + sizeof(th);
-                uint32_t binxml_size =  th.data_size;
-                decode_binxml(chunk_buffer, binxml_offset, binxml_size);
-
-                // need to check if this is inline definition
-
-
-             ////TO-DO-HERE
-
-                // テンプレートデータの開始位置：Token(1) + Header(33)
-                uint32_t data_start = i + 34; 
-                // 終了位置を保存（この位置に 0x00 トークンが来るはず）
-                template_end_pos = data_start + th.data_size;
-                is_parsing_template = 1;
-            
-                printf("--- Template Definition Start (ID: 0x%08x, templ.data_size=0x%x) ---\n", 
-                        th0C.template_id,  th.data_size);
-            
-                i += 34; // ヘッダー分を進めて内部のパースへ
-                break;
-            }
-            
-            case 0x0E: // BinXmlTokenOptionalSubstitution
-            {
-                //printf("token=0x0E BinXmlTokenOptionalSubstitution\n");
-            
-                i += 1; // token
-                uint16_t sub_id = *(uint16_t*)&buffer[i];
-                i += 2; // ID
-                uint8_t v_type = buffer[i];
-                i += 1; // Type
-            
-                printf("        %%%u (%s)\n", 
-                        sub_id, get_value_type_name(v_type));
-                break;
-            }
-            
-            
-            case 0x01: // BinXmlTokenOpenStartElement
-            case 0x41: // BinXmlTokenOpenStartElement | BinXmlTokenMoreData
-            {
-                i += 1; // consume token
-            
-                BINXML_OPEN_ELEMENT_HEADER open_el;
-                memcpy(&open_el, &buffer[i], sizeof(open_el));
-            
-                print_indent(depth++);
-                printf("<");
-                print_name_from_offset_buffer(chunk_buffer, open_el.name_offset);
-            
-                // ヘッダー分（DependencyID + DataSize + NameOffset）進める
-                i += sizeof(open_el);
-            
-                // 名前の実体（Inline Name）があればスキップ
-                i += get_inline_name_skip_bytes(buffer, i, open_el.name_offset);
-                
-            
-                // もし 0x41 (MoreData) なら、名前の直後に続く
-                // 「属性リストのサイズ情報 (4バイト)」を消費してスキップする
-                if (raw_token & 0x40) { 
-                    // この 4バイトは属性リスト全体の長さを示す
-                    // uint32_t attr_list_size = *(uint32_t*)&buffer[i]; 
-                    i += 4; 
-                }
-            
-                break;
-            }
-            
-            
-            case 0x06: // BinXmlTokenAttribute
-            case 0x46: // BinXmlTokenAttribute | BinXmlTokenMoreData
-            {
-                i += 1;
-            
-                BINXML_ATTRIBUTE_HEADER attr;
-                memcpy(&attr, &buffer[i], sizeof(attr));
-            
-                printf(" ");
-                print_name_from_offset_buffer(chunk_buffer, attr.name_offset);
-                printf("=");
-            
-                i += sizeof(attr);
-            
-                // インライン名のスキップ
-                i += get_inline_name_skip_bytes(buffer, i, attr.name_offset);
-            
-                // 0x46 の場合は、属性値（0x05など）の前に 4バイトのサイズ情報がある場合がある
-                // ※仕様上、0x46のMoreDataフラグは直後のデータの解釈に影響します
-            //    if (raw_token & 0x40) {
-            //        i += 4;
-            //    }
-            
-                break;
-            }
-            
-            case 0x05: // BinXmlTokenValue
-            {
-                i += 1; // consume token (0x05)
-                uint8_t v_type = buffer[i]; 
-                i += 1; // consume type
-            
-                printf(" (Type:0x%02x) Value: ", v_type);
-            
-                switch (v_type) {
-                    case 0x01: // Unicode String
-                    {
-                        uint16_t char_count = *(uint16_t*)&buffer[i];
-                        i += 2;
-                        // 前回の UTF-16LE 表示ロジック
-                        print_utf16le_string(char_count, (uint16_t *)&buffer[i]);
-                        printf("\n");
-                        i += (char_count * 2);
-                        break;
-                    }
-                    case 0x14: // SID (Binary Form)
-                    {
-                        // SIDの長さは 8 + (SubAuthorityCount * 4)
-                        // buffer[i+1] が SubAuthorityCount
-                        uint8_t count = buffer[i + 1];
-                        uint32_t sid_size = 8 + (count * 4);
-                        printf("[SID: Size %d]", sid_size);
-                        printf("\n");
-                        i += sid_size;
-                        break;
-                    }
-                    case 0x04: // UInt16
-                        printf("%u", *(uint16_t*)&buffer[i]);
-                        printf("\n");
-                        i += 2;
-                        break;
-                    case 0x08: // UInt32
-                        printf("%u", *(uint32_t*)&buffer[i]);
-                        printf("\n");
-                        i += 4;
-                        break;
-                    default:
-                        printf("[Pointer/Other Type skip]");
-                        printf("\n");
-                        // テンプレート定義内では、不明な型は慎重に扱う必要があります
-                        break;
-                }
-                break;
-            }
-            
-            
-            case BINXML_TOKEN_CLOSE_START_TAG: // 0x02
-                printf(">\n");
-                i += 1;
-                break;
-
-            case BINXML_TOKEN_END_ELEMENT: // 0x04
-                depth--;
-                print_indent(depth);
-                printf("</>\n"); // Or track element names in a stack to print </Event>
-                i += 1;
-                break;
-
-            case BINXML_TOKEN_CLOSE_EMPTY_TAG: // 0x03
-                printf(" />\n");
-                i += 1;
-                break;
-
-
-            default:
-                i += 1; 
-                break;
-        }
-
-
-        if (is_parsing_template == 0) 
-            break; // break from loop
-    }
-
-    
-
-    // 2. ループを抜けた直後（i == template_end_pos のはず）
-    if (is_parsing_template == 0) {
-        printf("\n--- Value Table Analysis ---\n");
-        
-    }
-}
 
 
 
 
-// token 0x01
-void handle_start_element(BinXmlContext *ctx) {
-    // Current data_ptr is at offset 0x01 of the token
-    
-    // 1. Skip Tag Dependency (2B) and Size (4B)
-    ctx->data_ptr += 6; 
-    
-    // 2. Read Name Offset (4B)
-    uint32_t name_offset = *(uint32_t *)ctx->data_ptr;
-    ctx->data_ptr += 4;
-    
-    // 3. Read Attribute Flag (1B)
-    uint8_t has_attributes = *ctx->data_ptr;
-    ctx->data_ptr += 1;
-
-    // 4. Resolve Name using your chunk_buffer
-    // Format: [2B char_count] [UTF-16 chars...] [2B null]
-    uint16_t *name_ptr = (uint16_t *)(ctx->chunk_buffer + name_offset);
-    uint16_t char_count = *name_ptr;
-    uint16_t *utf16_name = name_ptr + 1; // Move past the 2B count
-
-    printf("<");
-    print_utf16le_string(char_count, utf16_name);
-
-    // If no attributes follow, we can close the start tag bracket here.
-    // If attributes DO follow, the loop in parse_binxml_stream 
-    // will pick up the 0x02 (Attribute) tokens next.
-    if (!has_attributes) {
-        printf(">");
-    }
-}
-
-// token 0x41
-
-void handle_text_value(BinXmlContext *ctx) {
-    // data_ptr is currently at offset 0x01 (Dependency)
-    
-    // 1. Skip Dependency (2B), Data Size (4B), Name Offset (4B), 
-    //    Next Offset (4B), and Hash (2B) = 16 bytes total
-    ctx->data_ptr += 16;
-
-    // 2. Read the 2-byte Char Count
-    uint16_t char_count = *(uint16_t *)ctx->data_ptr;
-    ctx->data_ptr += 2;
-
-    // 3. Extract and print the UTF-16LE string
-    uint16_t *utf16_data = (uint16_t *)ctx->data_ptr;
-    
-    // Use your iconv helper
-    print_utf16le_string(char_count, utf16_data);
-
-    // 4. Advance the pointer: (char_count * 2) bytes + 2 bytes for Null
-    ctx->data_ptr += (char_count * 2) + 2;
-
-    // Safety: ensure we don't exceed end_ptr
-    if (ctx->data_ptr > ctx->end_ptr) {
-        ctx->data_ptr = ctx->end_ptr;
-    }
-}
-
-
-
-
-// 0x0C
-
-
-void handle_template_definition(BinXmlContext *ctx) {
-    // Current ctx->data_ptr is at offset 0x01 of the 0x0C structure
-    
-    // 1. Safety check: Do we have enough bytes left for the 0x0C header (9 bytes)?
-    if (ctx->data_ptr + 9 > ctx->end_ptr) {
-        return;
-    }
-
-    uint8_t flag = *ctx->data_ptr++; 
-
-    // 2. Read Template ID (4B) - Use memcpy for alignment safety
-    uint32_t template_id;
-    memcpy(&template_id, ctx->data_ptr, 4);
-    ctx->data_ptr += 4;
-
-    // 3. Read Template Definition Offset (4B)
-    uint32_t template_def_offset;
-    memcpy(&template_def_offset, ctx->data_ptr, 4);
-    ctx->data_ptr += 4;
-
-    // Save the resume point in the current record's stream
-    uint8_t *resume_ptr = ctx->data_ptr;
-
-    // 4. Calculate the absolute address of the Template (0x0E)
-    // template_def_offset is relative to the start of the Chunk
-    uint8_t *template_base = ctx->chunk_buffer + template_def_offset;
-
-    // 5. VALIDATION: Prevent Bus Error by checking bounds and token signature
-    // Assuming a standard Chunk size of 64KB (0x10000)
-    if (template_def_offset > 0x10000) {
-        fprintf(stderr, "[Error] Template offset 0x%X is out of chunk bounds\n", template_def_offset);
-        return;
-    }
-
-    if (*template_base != 0x0E) {
-        // If we don't find 0x0E, the offset logic is wrong. 
-        // We shouldn't crash; we should just return and skip the template.
-        return;
-    }
-
-    // 6. Map the 24-byte Template Definition Header
-    EVTX_TEMPLATE_DEFINITION_HEADER th;
-    memcpy(&th, template_base + 1, sizeof(EVTX_TEMPLATE_DEFINITION_HEADER));
-    
-    // 7. Initialize sub-context for RECURSION
-    // The BinXML data starts immediately after the 24-byte header
-    BinXmlContext template_ctx;
-    template_ctx.chunk_buffer = ctx->chunk_buffer;
-    template_ctx.data_ptr = template_base + 1 + sizeof(EVTX_TEMPLATE_DEFINITION_HEADER);
-    template_ctx.end_ptr = template_ctx.data_ptr + th.data_size;
-
-    // Double check: Ensure the sub-context doesn't exceed the chunk memory
-    if (template_ctx.end_ptr > ctx->chunk_buffer + 0x10000) {
-        template_ctx.end_ptr = ctx->chunk_buffer + 0x10000;
-    }
-
-    // 8. RECURSE: Parse the template structure
-    // This uses the shared value table to resolve 0x0D substitutions
-    parse_binxml_stream(&template_ctx);
-
-    // 9. Return the main pointer to the point right after the 0x0C block
-    ctx->data_ptr = resume_ptr;
-}
-
-
-
-void parse_binxml_stream(BinXmlContext *ctx) {
-    // Continue only as long as we are within the allocated size
-    while (ctx->data_ptr < ctx->end_ptr) {
-        uint8_t token = *ctx->data_ptr++;
-
-        switch (token) {
-            case 0x0C: // Template Definition
-                handle_template_definition(ctx);
-                break;
-
-            case 0x01: // Start Element
-                handle_start_element(ctx);
-                break;
-
-            case 0x05: // End Element (</tag>)
-                printf("</tag_name_placeholder>"); 
-                break;
-
-            case 0x0D: // Substitution
-            {
-                if (ctx->data_ptr + 2 > ctx->end_ptr) break; // Safety check
-                uint16_t index = *(uint16_t *)ctx->data_ptr;
-                ctx->data_ptr += 2;
-                get_item_value_by_index(ctx->chunk_buffer, index);
-                break;
-            }
-
-            case 0x41: // Normal Text Value
-                handle_text_value(ctx);
-                break;
-
-            case 0x00: // End of Token Stream
-                break;
-                //return;
-        }
-    }
-}

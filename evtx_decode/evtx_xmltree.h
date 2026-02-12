@@ -28,7 +28,8 @@ extern "C" {
 //
 typedef struct _XML_ATTRIBUTE {
     char *name;     // attribute name
-    char *value;    // attribute value
+    char *value;    // attribute value (NULL if none)
+    uint8_t value_type;
 } XML_ATTRIBUTE;
 
 
@@ -43,6 +44,7 @@ typedef struct _XML_ATTRIBUTE {
 typedef struct _XML_ELEMENT {
     char *name;                 // element name (e.g. "Event", "System")
     char *text;                 // text content (NULL if none)
+    uint8_t text_type;
 
     uint16_t attr_count;
     XML_ATTRIBUTE *attrs;
@@ -66,61 +68,25 @@ typedef struct _XML_TREE {
 
 
 // ------------------------------------------------------------
-// Tree lifecycle
+// Public APIs
 // ------------------------------------------------------------
 
-/*
- * Allocate and initialize a new XML tree.
- * root is initially NULL.
- */
 XML_TREE *xml_new_tree(void);
+void      xml_free_tree(XML_TREE *tree);
+void      xml_dump_tree(XML_TREE *tree);
+void      xml_dump_tree_compact(XML_TREE *tree);
+void      xml_dump_tree_text(XML_TREE *tree);
 
-/*
- * Free the entire XML tree and all associated memory.
- */
-void xml_free_tree(XML_TREE *tree);
-
-
-// ------------------------------------------------------------
-// Element helpers (used by BinXML decoder)
-// ------------------------------------------------------------
-
-/*
- * Create a new XML element with the given name.
- * text, attributes, and children are initialized to NULL.
- */
 XML_ELEMENT *xml_new_element(const char *name);
-
-/*
- * Append a child element to a parent element.
- * Child order is preserved.
- */
-void xml_add_child(XML_ELEMENT *parent, XML_ELEMENT *child);
-
-/*
- * Add an attribute to an element.
- * Returns 0 on success, -1 on failure.
- */
-int xml_add_attribute(XML_ELEMENT *elem,
-                      const char *name,
-                      const char *value);
-
-
-
-
-// Dump XML (pretty / compact)
-void xml_dump_element(XML_ELEMENT *elem);
-void xml_dump_element_compact(XML_ELEMENT *elem);
-
-// Tree helpers
-void xml_dump_tree(XML_TREE *tree);
-void xml_dump_tree_compact(XML_TREE *tree);
-
-// Search helpers
+int          xml_set_element(XML_ELEMENT *e, const char *text, uint8_t text_type);
+int          xml_add_attribute(XML_ELEMENT *e, XML_ATTRIBUTE *a);
+void         xml_add_child(XML_ELEMENT *parent, XML_ELEMENT *child);
 XML_ELEMENT *xml_find_child(XML_ELEMENT *parent, const char *name);
 
+XML_ATTRIBUTE *xml_new_attribute(const char *name);
+int            xml_set_attribute(XML_ATTRIBUTE *a, const char *value, uint8_t value_type);
 
-void xml_dump_tree_text(XML_TREE *tree);
+
 
 #ifdef __cplusplus
 }

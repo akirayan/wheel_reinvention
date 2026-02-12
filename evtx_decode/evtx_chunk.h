@@ -69,6 +69,6 @@ typedef struct {
 int chunk_name_offset_is_cached(uint32_t offset); 
 void chunk_name_offset_add_cache(uint32_t offset);
 
-int decode_evtx_chunk(FILE *fp, uint16_t chunk_index, uint16_t output_mode);
+int decode_evtx_chunk(FILE *fp, uint16_t chunk_index, uint32_t output_mode);
 
 #endif
